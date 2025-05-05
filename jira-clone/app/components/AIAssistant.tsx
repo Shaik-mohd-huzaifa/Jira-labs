@@ -3,10 +3,29 @@
 import React, { useState, useEffect } from 'react';
 import { useJira } from '../context/JiraContext';
 
+// Define interfaces for ticket display
+interface TicketResult {
+  id: string;
+  title: string;
+  type: 'bug' | 'task' | 'story' | 'epic';
+  status: string;
+  assignee?: {
+    name: string;
+    avatar: string;
+  };
+  priority?: 'low' | 'medium' | 'high';
+}
+
+interface ChatMessage {
+  type: 'user' | 'assistant';
+  text: string;
+  tickets?: TicketResult[];
+}
+
 const AIAssistant: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [message, setMessage] = useState('');
-  const [chatHistory, setChatHistory] = useState<{type: 'user' | 'assistant', text: string}[]>([
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([
     {type: 'assistant', text: 'Hi there! I\'m your Jira Labs assistant. How can I help you today? You can ask me to create tickets, list tasks, create columns, or update ticket statuses.'}
   ]);
   const [isLoading, setIsLoading] = useState(false);
@@ -107,11 +126,27 @@ const AIAssistant: React.FC = () => {
       if (data.functionCall) {
         handleFunctionCall(data.functionCall);
       } else {
-        // Add AI response to chat
-        setChatHistory(prev => [
-          ...prev, 
-          { type: 'assistant', text: data.message || 'Sorry, I couldn\'t process your request.' }
-        ]);
+        // Check if this is a ticket listing response
+        const ticketListingPattern = /found (\d+) tickets?:/i;
+        const match = data.message?.match(ticketListingPattern);
+        
+        if (match && match[1] && parseInt(match[1]) > 0 && data.tickets) {
+          // This is a ticket listing response with tickets available
+          setChatHistory(prev => [
+            ...prev, 
+            { 
+              type: 'assistant', 
+              text: data.message || 'Here are the tickets I found:', 
+              tickets: data.tickets 
+            }
+          ]);
+        } else {
+          // Standard text response
+          setChatHistory(prev => [
+            ...prev, 
+            { type: 'assistant', text: data.message || 'Sorry, I couldn\'t process your request.' }
+          ]);
+        }
       }
     } catch (error) {
       console.error('Error getting AI response:', error);
@@ -325,7 +360,7 @@ const AIAssistant: React.FC = () => {
     setIsLoading(true);
     
     try {
-      let result;
+      let result: any = { success: false, message: 'Function execution failed' };
       
       // Execute the function using the Jira context
       switch (functionName) {
@@ -360,16 +395,71 @@ const AIAssistant: React.FC = () => {
         }
         
         case 'list_tickets': {
-          const tickets = getFilteredTickets({
-            assignee: args.assignee,
-            status: args.status,
-            type: args.type
-          });
+          // Get tickets using filter criteria
+          const { assignee, status, type } = args;
+          const allTickets = getAllTickets();
+          
+          let filteredTickets = [...allTickets];
+          
+          if (assignee) {
+            filteredTickets = filteredTickets.filter(t => 
+              t.assignee?.name.toLowerCase().includes(assignee.toLowerCase())
+            );
+          }
+          
+          if (status) {
+            filteredTickets = filteredTickets.filter(t => 
+              t.status.toLowerCase() === status.toLowerCase()
+            );
+          }
+          
+          if (type) {
+            filteredTickets = filteredTickets.filter(t => t.type === type);
+          }
+          
+          // Extra filter for RAG related tickets
+          if (args.query && args.query.toLowerCase().includes('rag')) {
+            filteredTickets = filteredTickets.filter(t => 
+              t.title.toLowerCase().includes('rag')
+            );
+          }
+          
+          // Check if we need to look for "todo" status
+          if (args.query && args.query.toLowerCase().includes('todo')) {
+            filteredTickets = filteredTickets.filter(t => 
+              t.status.toLowerCase() === 'to do'
+            );
+          }
           
           result = {
-            tickets,
-            count: tickets.length
+            success: true,
+            tickets: filteredTickets,
+            count: filteredTickets.length,
+            message: `Found ${filteredTickets.length} tickets:`
           };
+          
+          // Format the result message with ticket info
+          if (filteredTickets.length > 0) {
+            filteredTickets.forEach(ticket => {
+              const assigneeInfo = ticket.assignee ? `assigned to ${ticket.assignee.name}` : 'unassigned';
+              result.message += `\n- ${ticket.id}: "${ticket.title}" (${ticket.type}, ${ticket.status}, ${assigneeInfo})`;
+            });
+            
+            // Add the tickets to the response for UI rendering
+            setChatHistory(prev => [
+              ...prev, 
+              { 
+                type: 'assistant', 
+                text: result.message, 
+                tickets: filteredTickets 
+              }
+            ]);
+          } else {
+            setChatHistory(prev => [
+              ...prev, 
+              { type: 'assistant', text: "I couldn't find any tickets matching your criteria." }
+            ]);
+          }
           break;
         }
         
@@ -524,7 +614,7 @@ const AIAssistant: React.FC = () => {
           ) : (
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
-            </svg>
+          </svg>
           )}
         </button>
       </div>
@@ -556,19 +646,82 @@ const AIAssistant: React.FC = () => {
                 className={`mb-3 ${entry.type === 'user' ? 'flex justify-end' : 'flex justify-start'}`}
               >
                 <div 
-                  className={`max-w-[80%] rounded-lg py-2 px-3 ${
+                  className={`max-w-[85%] rounded-lg py-2 px-3 ${
                     entry.type === 'user' 
                       ? 'bg-blue-600 text-white rounded-tr-none' 
                       : 'bg-gray-100 text-gray-800 rounded-tl-none'
                   }`}
                 >
                   <p className="text-sm whitespace-pre-line">{entry.text}</p>
+                  
+                  {/* Render ticket tiles if this message has ticket results */}
+                  {entry.tickets && entry.tickets.length > 0 && (
+                    <div className="mt-3 space-y-3">
+                      {entry.tickets.map(ticket => (
+                        <div 
+                          key={ticket.id}
+                          className="bg-white border border-gray-200 rounded-md shadow-sm p-3 hover:shadow-md transition-shadow"
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center">
+                              <span className={`inline-block w-3 h-3 rounded-full mr-2 ${
+                                ticket.type === 'bug' ? 'bg-red-500' :
+                                ticket.type === 'story' ? 'bg-green-500' :
+                                ticket.type === 'epic' ? 'bg-purple-500' : 'bg-blue-500'
+                              }`}></span>
+                              <span className="text-xs font-medium text-gray-500">{ticket.id}</span>
+                            </div>
+                            
+                            <div>
+                              <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                                ticket.priority === 'high' ? 'bg-red-100 text-red-800' :
+                                ticket.priority === 'low' ? 'bg-green-100 text-green-800' :
+                                'bg-blue-100 text-blue-800'
+                              }`}>
+                                {ticket.priority || 'medium'}
+                              </span>
+                            </div>
+                          </div>
+                          
+                          <h4 className="text-sm font-medium mb-2">{ticket.title}</h4>
+                          
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center">
+                              {ticket.assignee ? (
+                                <>
+                                  <div className="w-6 h-6 rounded-full overflow-hidden mr-2">
+                                    <img 
+                                      src={ticket.assignee.avatar} 
+                                      alt={ticket.assignee.name}
+                                      className="w-full h-full object-cover"
+                                    />
+                                  </div>
+                                  <span className="text-xs text-gray-600">{ticket.assignee.name}</span>
+                                </>
+                              ) : (
+                                <span className="text-xs text-gray-500">Unassigned</span>
+                              )}
+                            </div>
+                            
+                            <span className={`text-xs px-2 py-1 rounded-full ${
+                              ticket.status === 'To Do' ? 'bg-gray-100 text-gray-800' :
+                              ticket.status === 'In Progress' ? 'bg-blue-100 text-blue-800' :
+                              ticket.status === 'Done' ? 'bg-green-100 text-green-800' :
+                              'bg-gray-100 text-gray-800'
+                            }`}>
+                              {ticket.status}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
             {isLoading && (
               <div className="flex justify-start mb-3">
-                <div className="bg-gray-100 text-gray-800 max-w-[80%] rounded-lg py-2 px-3 rounded-tl-none">
+                <div className="bg-gray-100 text-gray-800 max-w-[85%] rounded-lg py-2 px-3 rounded-tl-none">
                   <div className="flex space-x-1 items-center">
                     <div className="w-2 h-2 bg-gray-400 rounded-full animate-pulse"></div>
                     <div className="w-2 h-2 bg-gray-400 rounded-full animate-pulse delay-75"></div>

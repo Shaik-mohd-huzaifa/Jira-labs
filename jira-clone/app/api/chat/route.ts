@@ -435,7 +435,7 @@ export async function POST(request: Request) {
 
     // Make the actual API call to OpenAI with function calling
     const response = await openai.chat.completions.create({
-      model: "gpt-4-turbo",
+      model: "gpt-4o-mini",
       messages: messages,
       tools: functionSchemas.map(schema => ({
         type: "function",
