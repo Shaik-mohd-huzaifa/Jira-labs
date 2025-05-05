@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import OpenAI from 'openai';
 
 interface TicketType {
   id: string;
@@ -236,7 +237,7 @@ const functions = {
   }
 };
 
-// Define function schemas for the assistant
+// Function schemas for the OpenAI assistant
 const functionSchemas = [
   {
     name: 'create_ticket',
@@ -352,271 +353,19 @@ const functionSchemas = [
   }
 ];
 
-// Mock function to simulate AI response with function calling
-async function simulateAIResponse(messages: any[], functionCall?: string) {
-  // Get the most recent user message
-  const lastUserMessage = [...messages].reverse().find(m => m.role === 'user')?.content || '';
-  
-  // Parse the user message to determine if we should call a function
-  const lowerCaseMessage = lastUserMessage.toLowerCase();
-  
-  // If a specific function was requested in previous interaction, call it
-  if (functionCall) {
-    return {
-      type: 'function_call',
-      function: functionCall,
-      arguments: '{}' // This would be filled with parsed arguments in a real implementation
-    };
-  }
-
-  // Create ticket intent
-  if (lowerCaseMessage.includes('create') && 
-      (lowerCaseMessage.includes('ticket') || lowerCaseMessage.includes('issue') || lowerCaseMessage.includes('task'))) {
-    
-    // Extract title and type from message
-    const args: any = {};
-    
-    // Auto-generate title if not explicitly stated
-    if (lowerCaseMessage.includes('implement')) {
-      const implementMatch = lastUserMessage.match(/implement\s+([a-zA-Z0-9\s]+)/i);
-      if (implementMatch && implementMatch[1]) {
-        args.title = `Implement ${implementMatch[1].trim()}`;
-      }
-    } else if (lowerCaseMessage.includes('add')) {
-      const addMatch = lastUserMessage.match(/add\s+([a-zA-Z0-9\s]+)/i);
-      if (addMatch && addMatch[1]) {
-        args.title = `Add ${addMatch[1].trim()}`;
-      }
-    } else if (lowerCaseMessage.includes('fix')) {
-      const fixMatch = lastUserMessage.match(/fix\s+([a-zA-Z0-9\s]+)/i);
-      if (fixMatch && fixMatch[1]) {
-        args.title = `Fix ${fixMatch[1].trim()}`;
-      }
-    } else if (lowerCaseMessage.includes('for')) {
-      const forMatch = lastUserMessage.match(/for\s+([a-zA-Z0-9\s]+)/i);
-      if (forMatch && forMatch[1]) {
-        args.title = forMatch[1].trim();
-      }
-    }
-    
-    // If we couldn't extract a title, try to generate one based on the request content
-    if (!args.title && lowerCaseMessage.includes('rag')) {
-      args.title = 'Implement RAG for chatbot';
-    } else if (!args.title && lowerCaseMessage.length > 20) {
-      // Use the user's message as a title if it's reasonably long
-      args.title = lastUserMessage.replace(/create\s+(a|new)?\s*(ticket|issue|task)\s*(for|to)?/i, '').trim();
-      if (args.title.length < 5) args.title = null;
-    }
-    
-    // Extract type from message
-    if (lowerCaseMessage.includes('feature')) {
-      args.type = 'feature';
-    } else if (lowerCaseMessage.includes('bug')) {
-      args.type = 'bug';
-    } else if (lowerCaseMessage.includes('task')) {
-      args.type = 'task';
-    } else if (lowerCaseMessage.includes('story')) {
-      args.type = 'story';
-    } else if (lowerCaseMessage.includes('epic')) {
-      args.type = 'epic';
-    } else {
-      // Default to task if no type is specified
-      args.type = 'task';
-    }
-    
-    // Check for priority
-    if (lowerCaseMessage.includes('high priority') || lowerCaseMessage.includes('urgent')) {
-      args.priority = 'high';
-    } else if (lowerCaseMessage.includes('low priority')) {
-      args.priority = 'low';
-    }
-    
-    // Check for assignee
-    const assigneeMatches = [
-      { regex: /assign to (.*?)(?: |$)/i, group: 1 },
-      { regex: /assigned to (.*?)(?: |$)/i, group: 1 }
-    ];
-    
-    for (const match of assigneeMatches) {
-      const assigneeMatch = lastUserMessage.match(match.regex);
-      if (assigneeMatch && assigneeMatch[match.group]) {
-        args.assignee = assigneeMatch[match.group].trim();
-        break;
-      }
-    }
-    
-    return {
-      type: 'function_call',
-      function: 'create_ticket',
-      arguments: args
-    };
-  }
-  
-  // List tickets intent
-  if ((lowerCaseMessage.includes('list') || lowerCaseMessage.includes('show') || lowerCaseMessage.includes('get')) && 
-      (lowerCaseMessage.includes('ticket') || lowerCaseMessage.includes('issue') || lowerCaseMessage.includes('task'))) {
-    return {
-      type: 'function_call',
-      function: 'list_tickets',
-      arguments: {}
-    };
-  }
-  
-  // Create column intent
-  if (lowerCaseMessage.includes('create') && lowerCaseMessage.includes('column')) {
-    return {
-      type: 'function_call',
-      function: 'create_column',
-      arguments: {}
-    };
-  }
-  
-  // Update ticket status intent
-  if ((lowerCaseMessage.includes('update') || lowerCaseMessage.includes('move') || lowerCaseMessage.includes('change')) && 
-      (lowerCaseMessage.includes('ticket') || lowerCaseMessage.includes('issue') || lowerCaseMessage.includes('task')) &&
-      (lowerCaseMessage.includes('status'))) {
-    return {
-      type: 'function_call',
-      function: 'update_ticket_status',
-      arguments: {}
-    };
-  }
-  
-  // Assign ticket intent
-  if ((lowerCaseMessage.includes('assign') || lowerCaseMessage.includes('give')) && 
-      (lowerCaseMessage.includes('ticket') || lowerCaseMessage.includes('issue') || lowerCaseMessage.includes('task') || lowerCaseMessage.match(/jr-\d+/i))) {
-    
-    // Extract ticket ID and assignee from message
-    const args: any = {};
-    
-    // Extract ticket ID using regex pattern JR-XXX where XXX is a number
-    const ticketIdMatch = lastUserMessage.match(/JR-\d+/i);
-    if (ticketIdMatch) {
-      args.ticketId = ticketIdMatch[0];
-    }
-    
-    // If no specific ticket ID was found, look for "this ticket" and use the most recently created ticket
-    if (!args.ticketId && (lowerCaseMessage.includes('this ticket') || lowerCaseMessage.includes('it to'))) {
-      // Get the last created ticket ID (we'll use the highest ID number as a simple heuristic)
-      const highestId = tickets.reduce((max, ticket) => {
-        const idNum = parseInt(ticket.id.replace('JR-', ''));
-        return idNum > max ? idNum : max;
-      }, 0);
-      
-      if (highestId > 0) {
-        args.ticketId = `JR-${highestId}`;
-      }
-    }
-    
-    // Extract assignee name, looking for specific patterns
-    let assigneeName = '';
-    
-    // Look for "to X" pattern
-    const toPattern = /(?:to|with)\s+([a-zA-Z\s]+)(?:$|\.|\,|\;)/i;
-    const toMatch = lastUserMessage.match(toPattern);
-    if (toMatch && toMatch[1]) {
-      assigneeName = toMatch[1].trim();
-    }
-    
-    // Process the assignee name
-    if (assigneeName) {
-      // Attempt to match with team members, allowing partial matches
-      const allTeamMembers = [
-        'Alex Martinez', 'Sarah Johnson', 'Michael Chen', 'Emily Wilson', 
-        'David Kim', 'Jessica Taylor', 'Robert Garcia', 'Lisa Brown',
-        'John Wilson', 'Sophia Miller'
-      ];
-      
-      // First look for exact matches
-      const exactMatch = allTeamMembers.find(member => 
-        member.toLowerCase() === assigneeName.toLowerCase()
-      );
-      
-      if (exactMatch) {
-        args.assignee = exactMatch;
-      } else {
-        // Then look for partial matches
-        for (const member of allTeamMembers) {
-          const nameParts = member.toLowerCase().split(' ');
-          
-          // Check if the assignee name starts with the first name
-          if (nameParts[0] === assigneeName.toLowerCase() || 
-              member.toLowerCase().includes(assigneeName.toLowerCase())) {
-            args.assignee = member;
-            break;
-          }
-        }
-      }
-    }
-    
-    // Simple name shortcuts
-    if (!args.assignee) {
-      if (lowerCaseMessage.includes('alex')) {
-        args.assignee = 'Alex Martinez';
-      } else if (lowerCaseMessage.includes('sarah')) {
-        args.assignee = 'Sarah Johnson';
-      } else if (lowerCaseMessage.includes('michael')) {
-        args.assignee = 'Michael Chen';
-      } else if (lowerCaseMessage.includes('emily')) {
-        args.assignee = 'Emily Wilson';
-      } else if (lowerCaseMessage.includes('david')) {
-        args.assignee = 'David Kim';
-      }
-    }
-    
-    return {
-      type: 'function_call',
-      function: 'assign_ticket',
-      arguments: args
-    };
-  }
-  
-  // Get board intent
-  if ((lowerCaseMessage.includes('show') || lowerCaseMessage.includes('get')) && 
-      lowerCaseMessage.includes('board')) {
-    return {
-      type: 'function_call',
-      function: 'get_board',
-      arguments: {}
-    };
-  }
-  
-  // Default responses if no function call is needed
-  if (lowerCaseMessage.includes('sprint')) {
-    return {
-      type: 'text',
-      content: "Based on your sprint data, I recommend focusing on the high-priority tasks first. Would you like me to help you organize your sprint backlog?"
-    };
-  } else if (lowerCaseMessage.includes('team') || lowerCaseMessage.includes('member')) {
-    return {
-      type: 'text',
-      content: "Your team currently has 10 members assigned to this project. The most active contributors this sprint are Alex and Sarah."
-    };
-  } else if (lowerCaseMessage.includes('progress')) {
-    return {
-      type: 'text',
-      content: "Current sprint is 65% complete with 12 out of 20 story points completed. You're on track to meet your sprint goals."
-    };
-  } else if (lowerCaseMessage.includes('deadline') || lowerCaseMessage.includes('date')) {
-    return {
-      type: 'text',
-      content: "The current sprint ends on May 15, 2025. You have 3 high-priority tasks that should be completed by then."
-    };
-  } else if (lowerCaseMessage.includes('hello') || lowerCaseMessage.includes('hi')) {
-    return {
-      type: 'text',
-      content: "Hello! I'm your Jira Labs assistant. I can help with managing tasks, sprints, and team allocation. You can ask me to create tickets, list tasks, create columns, or update ticket statuses."
-    };
-  } else {
-    return {
-      type: 'text',
-      content: "I'm here to help with your project management needs. You can ask me to create tickets, list tasks by various filters, create board columns, or update ticket statuses."
-    };
-  }
-}
-
 export async function POST(request: Request) {
   try {
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY || '',
+    });
+
+    if (!process.env.OPENAI_API_KEY) {
+      return NextResponse.json(
+        { error: 'OpenAI API key missing. Please add OPENAI_API_KEY to your .env.local file.' },
+        { status: 500 }
+      );
+    }
+    
     const body = await request.json();
     const { messages, functionResults } = body;
     
@@ -628,10 +377,8 @@ export async function POST(request: Request) {
     }
 
     // If previous function results are present, use them to formulate a response
-    let functionName = null;
     if (functionResults) {
       const { function: func, result } = functionResults;
-      functionName = func;
       
       // Format appropriate response based on function result
       let responseMessage = "I've processed your request.";
@@ -686,19 +433,41 @@ export async function POST(request: Request) {
       return NextResponse.json({ message: responseMessage });
     }
 
-    // Check if we need to call a function
-    const aiResponse = await simulateAIResponse(messages, functionName || undefined);
-    
-    if (aiResponse.type === 'function_call') {
+    // Make the actual API call to OpenAI with function calling
+    const response = await openai.chat.completions.create({
+      model: "gpt-4-turbo",
+      messages: messages,
+      tools: functionSchemas.map(schema => ({
+        type: "function",
+        function: schema
+      })),
+      tool_choice: "auto"
+    });
+
+    const responseMessage = response.choices[0].message;
+
+    // Check if the model wants to call a function
+    if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
+      const toolCall = responseMessage.tool_calls[0];
+      const functionName = toolCall.function.name;
+      let args = {};
+      
+      try {
+        args = JSON.parse(toolCall.function.arguments);
+      } catch (error) {
+        console.error('Failed to parse function arguments', error);
+      }
+      
       return NextResponse.json({
         functionCall: {
-          name: aiResponse.function,
-          arguments: aiResponse.arguments
+          name: functionName,
+          arguments: args
         }
       });
     }
     
-    return NextResponse.json({ message: aiResponse.content });
+    // Return the text response
+    return NextResponse.json({ message: responseMessage.content });
   } catch (error) {
     console.error('API error:', error);
     return NextResponse.json(
